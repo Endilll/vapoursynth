@@ -1222,7 +1222,67 @@ cdef class VideoNode(object):
             self.funcs.freeNode(self.node)
         
     def __getattr__(self, name):
+        from copy      import deepcopy
+        from functools import partial, wraps
+        from inspect   import signature
+        from types     import ModuleType
+
         err = False
+
+        try:
+            obj = self.core.__getattribute__(name)
+
+            if isinstance(obj, ModuleType):
+                module_funcs = {}
+
+                # extracting module's local functions
+
+                for attr_name, attr in obj.__dict__.items():
+                    try:
+                        if attr_name[0] == '_':
+                            continue
+                        if not callable(attr):
+                            continue
+                        if attr.__module__ != obj.__name__:
+                            continue
+                        module_funcs[attr_name] = attr
+                    except Exception:
+                        pass
+
+                # filtering functions out using their annotations if they're present
+
+                from typing import get_type_hints
+
+                for func_name, func in module_funcs.copy().items():
+                    try:
+                        if len(signature(func).parameters) == 0:
+                            del module_funcs[func_name]
+                            continue
+                        params_types = tuple(get_type_hints(func).values())
+                        if len(params_types) == 0:
+                            continue
+                        if params_types[0] != VideoNode:
+                            del module_funcs[func_name]
+                    except Exception as e:
+                        pass
+
+                # injecting self into every function
+
+                class _ModuleProxy: 
+                    pass
+                proxy = _ModuleProxy()
+
+                for func_name, func in module_funcs.items():
+                    partial_func = partial(func, self)
+                    proxy.__dict__[func_name] = partial_func
+
+                return proxy    
+
+            if callable(obj):
+                return partial(obj, self)
+        except Exception as e:
+            err = True
+        
         try:
             obj = self.core.__getattr__(name)
             if isinstance(obj, Plugin):
@@ -1230,6 +1290,7 @@ cdef class VideoNode(object):
             return obj
         except AttributeError:
             err = True
+
         if err:
             raise AttributeError('There is no attribute or namespace named ' + name)
 
@@ -1502,6 +1563,7 @@ cdef class Core(object):
     cdef public bint add_cache
 
     cdef object __weakref__
+    cdef dict __dict__
 
     def __init__(self):
         raise Error('Class cannot be instantiated directly')
@@ -1549,6 +1611,54 @@ cdef class Core(object):
     def set_max_cache_size(self, int mb):
         self.max_cache_size = mb
         return self.max_cache_size
+
+    def augment(self, attributes, clear_previous_augments = True):
+        from functools import partial
+        from types  import ModuleType
+        from typing import get_type_hints
+
+        # filtering out using type
+
+        new_attrs = {
+            name: value
+            for name, value in attributes.items()
+            if callable(value) or isinstance(value, ModuleType)}
+
+        # filtering out using type hints if they're present
+
+        for name, func in new_attrs.copy().items():
+            if not callable(func):
+                continue
+            try:
+                if not isinstance(func, partial):
+                    parameters_types = tuple(get_type_hints(func).values())
+                else:
+                    parameters_types = func.args
+
+                if len(parameters_types) == 0:
+                    continue
+                if parameters_types[0] != VideoNode:
+                    del new_attrs[name]
+            except (AttributeError, TypeError):
+                pass
+
+        # filtering out names that collide with loaded plugins
+
+        plugins_namespaces = [
+            plugin['namespace']
+            for plugin
+            in self.get_plugins().values()
+        ]
+        for name, attr in new_attrs.copy().items():
+            if name in plugins_namespaces:
+                del new_attrs[name]
+
+        if clear_previous_augments:
+            self.__dict__.clear()
+        self.__dict__.update(new_attrs)
+
+    def execute(self, command):
+        exec(command)
 
     def get_plugins(self):
         cdef VSMap *m = self.funcs.getPlugins(self.core)
