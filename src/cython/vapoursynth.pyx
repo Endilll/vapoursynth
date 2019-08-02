@@ -1654,7 +1654,7 @@ cdef Core vsscript_get_core_internal(int environment_id):
     if not environment_id in _cores:
         _cores[environment_id] = createCore()
     return _cores[environment_id]
-    
+
 class _CoreProxyVSScript(object):
     def __init__(self):
         raise Error('Class cannot be instantiated directly')
@@ -1675,7 +1675,7 @@ class _CoreProxyVSScript(object):
         
     def __setattr__(self, name, value):
         setattr(self.core, name, value)
-    
+
 def _make_standalone_proxy():
     core = get_core()
     dct = {"core": core}
@@ -1686,7 +1686,7 @@ def _make_standalone_proxy():
     return type('_CoreProxyStandalone', (), dct)
 _CoreProxyStandalone = _make_standalone_proxy()
 core = _CoreProxyStandalone()    
-    
+
 
 cdef class Plugin(object):
     cdef Core core
@@ -1747,6 +1747,8 @@ cdef class Plugin(object):
         return sout.replace('; )', ')')
 
     def __dir__(self):
+        print('Plugin.__dir__()')
+        # print(type(self).__dict__)
         attrs = []
         functions = self.get_functions()
         for key in functions:
@@ -1754,7 +1756,8 @@ cdef class Plugin(object):
         return attrs
 
 cdef Plugin createPlugin(VSPlugin *plugin, str namespace, const VSAPI *funcs, Core core):
-    cdef Plugin instance = Plugin.__new__(Plugin)
+    t = type('Plugin', (Plugin,), {})
+    cdef Plugin instance = t.__new__(t)
     instance.core = core
     instance.plugin = plugin
     instance.funcs = funcs
@@ -1766,6 +1769,15 @@ cdef Plugin createPlugin(VSPlugin *plugin, str namespace, const VSAPI *funcs, Co
             instance.__doc__ = plugin_dict['name']
             break
 
+    cdef VSMap *m = funcs.getFunctions(plugin)
+    for i in range(instance.funcs.propNumKeys(m)):
+        cname = instance.funcs.propGetKey(m, i)
+        name = cname.decode('utf-8')
+        signature = instance.funcs.propGetData(m, cname, 0, NULL).decode('utf-8')
+        signature = signature.split(';', 1)
+        setattr(type(instance), name, createFunction(name, signature[1], instance, instance.funcs))
+    funcs.freeMap(m)
+
     return instance
 
 cdef class Function(object):
@@ -1774,8 +1786,12 @@ cdef class Function(object):
     cdef readonly str name
     cdef readonly str signature
     
+    def __getattribute__(self, name):
+        print(f'Function.__getattribute__({name})')
+        return super().__getattribute__(name)
     @property
     def __signature__(self):
+        print('Function.__signature__()')
         if typing is None:
             return None
         return construct_signature(self.signature, injected=self.plugin.injected_arg)
